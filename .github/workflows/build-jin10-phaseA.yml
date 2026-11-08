@@ -1,0 +1,89 @@
+name: Build GodMode Pro Jin10 Phase A
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Apply Jin10 Phase A changes automatically
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          base = Path('app/src/main/java/com/kaisar/xposed/godmode/inject')
+          hook = base / 'HookRegistry.java'
+          injector = base / 'AppInjector.java'
+          h = hook.read_text()
+          a = injector.read_text()
+
+          replacements = [
+              ('    private static final String TAG = "HookRegistry";\n',
+               '    private static final String TAG = "HookRegistry";\n'
+               '    /** Temporary compatibility experiment: skip interaction hooks for Jin10 only. */\n'
+               '    private static final String PACKAGE_JIN10 = "com.jin10";\n'),
+              ('    public static synchronized HookInstallReport registerAll(Property<Boolean> switchProp) {\n'
+               '        if (switchProp != null) sEditorEnabled = switchProp.get();\n',
+               '    public static synchronized HookInstallReport registerAll(Property<Boolean> switchProp) {\n'
+               '        return registerAll(switchProp, null);\n'
+               '    }\n\n'
+               '    public static synchronized HookInstallReport registerAll(Property<Boolean> switchProp, String packageName) {\n'
+               '        if (switchProp != null) sEditorEnabled = switchProp.get();\n'
+               '        boolean skipInteractionHooks = PACKAGE_JIN10.equals(packageName);\n'),
+              ('        if (!sTouchHookInstalled) {\n',
+               '        if (skipInteractionHooks) {\n'
+               '            Logger.i(TAG, "compatibility profile: skipping touch/key hooks for " + packageName);\n'
+               '        } else if (!sTouchHookInstalled) {\n'),
+              ('        if (!sKeyHookInstalled) {\n',
+               '        if (!skipInteractionHooks && !sKeyHookInstalled) {\n'),
+          ]
+          for old, new in replacements:
+              if old not in h:
+                  raise SystemExit('Cannot locate expected HookRegistry source text; stop without building.')
+              h = h.replace(old, new, 1)
+
+          old_call = ('        HookRegistry.HookInstallReport hookReport = HookRegistry.registerAll(\n'
+                      '                ModuleBootstrap.getSwitchProp());')
+          new_call = ('        HookRegistry.HookInstallReport hookReport = HookRegistry.registerAll(\n'
+                      '                ModuleBootstrap.getSwitchProp(), packageName);')
+          if old_call not in a:
+              raise SystemExit('Cannot locate expected AppInjector source text; stop without building.')
+          a = a.replace(old_call, new_call, 1)
+
+          hook.write_text(h)
+          injector.write_text(a)
+          print('Applied Jin10 Phase A changes.')
+          PY
+
+      - name: Build debug APK
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon :app:assembleDebug
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: GodMode-Pro-Jin10-PhaseA-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
